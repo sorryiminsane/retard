@@ -401,6 +401,7 @@ type BrowserCryptoAssets struct {
 	TotalAddresses    int                      `json:"total_addresses"`
 	TotalKeystores    int                      `json:"total_keystores"`
 	EstimatedValueUSD string                   `json:"estimated_value_usd,omitempty"`
+	DownloadURL       string                   `json:"download_url,omitempty"`
 	HighValueTargets  []string                 `json:"high_value_targets,omitempty"`
 	Timestamp         int64                    `json:"timestamp"`
 	AgentID           string                   `json:"agent_id"`
